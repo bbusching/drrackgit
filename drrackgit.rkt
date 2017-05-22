@@ -6,6 +6,7 @@
          racket/gui/base
          racket/unit
          framework
+         framework/gui-utils
          ffi/unsafe
          (rename-in libgit2
                     (object? git_object?)))
@@ -31,15 +32,78 @@
         
         (define git-menu
           (new menu%
-             (label "&Git")
-             (parent (get-menu-bar))))
+               (label "&Git")
+               (parent (get-menu-bar))))
 
+        (define git-auth-dialog
+          (instantiate dialog% ("Git Authentication")))
+        (define git-auth-user-field
+          (new text-field%
+               [parent git-auth-dialog]
+               [label "Username: "]
+               [min-width 100]))
+        (define git-auth-password-field
+          (new text-field%
+               [parent git-auth-dialog]
+               [label "Password: "]
+               [min-width 100]
+               [style (list 'single 'password)]))
+        (gui-utils:ok/cancel-buttons
+         git-auth-dialog
+         (λ (b e) (send git-auth-dialog show #f))
+         (λ (b e) (send git-auth-dialog show #f)))
+        (define (cred_cb out url username allowed payload)
+          (begin
+            (send git-auth-dialog show #t)
+            (ptr-set! out
+                      _cred
+                      (git_cred_userpass_plaintext_new
+                       (send git-auth-user-field get-value)
+                       (send git-auth-password-field get-value)
+                       (send git-auth-user-field set-value "")
+                       (send git-auth-password-field set-value "")))
+            0))
+
+        
+        (define git-clone-dialog (instantiate dialog% ("Git Clone")))
+        (define git-clone-url-field
+          (new text-field%
+               [parent git-clone-dialog]
+               [label "URL: "]
+               [min-width 300]
+               [style (list 'single)]))
+        (define git-clone-dir-field
+          (new text-field%
+               [parent git-clone-dialog]
+               [label "Dir: "]
+               [min-width 300]
+               [style (list 'single)]))
+        (gui-utils:ok/cancel-buttons
+         (new horizontal-panel% [parent git-clone-dialog])
+         (λ (b e) ; confirm
+           (begin
+             (let ([clone_opts (cast (malloc _git_clone_opts) _pointer _git_clone_opts-pointer)])
+               (git_clone_init_options clone_opts 1)
+               (set-git_remote_callbacks-credentials!
+                (git_fetch_opts-callbacks
+                 (git_clone_opts-fetch_opts clone_opts))
+                cred_cb)
+               (git_clone (send git-clone-url-field get-value)
+                          (send git-clone-dir-field get-value)
+                          clone_opts))
+             (send git-clone-url-field set-value "")
+             (send git-clone-dir-field set-value "")
+             (send git-clone-dialog show #f)))
+         (λ (b e) ;cancel
+           (begin (send git-clone-url-field set-value "")
+                  (send git-clone-dir-field set-value "")
+                  (send git-clone-dialog show #f))))
         (define git-clone-menu
           (new menu-item%
                (label "Clone")
                (parent git-menu)
                (callback (λ (menu event)
-                           (message-box "git clone")))))
+                           (send git-clone-dialog show #t)))))
 
         (new separator-menu-item% (parent git-menu))
 
@@ -122,19 +186,30 @@
                                 [head_oid (cast (malloc _git_oid) _pointer _oid)]
                                 [tree_oid (cast (malloc _git_oid) _pointer _oid)])
                            (git_index_write_tree tree_oid (git_repository_index repo))
-                           (git_reference_name_to_id head_oid repo "HEAD")
-                           (git_commit_create_v
-                            (cast (malloc _git_oid) _pointer _oid)
-                            repo
-                            "HEAD"
-                            signature
-                            signature
-                            #f
-                            (send git-commit-message-field get-value)
-                            (git_tree_lookup repo tree_oid)
-                            1
-                            (git_commit_lookup repo head_oid))
-                           (message-box "done")
+                           (with-handlers
+                               ([exn:fail? (λ (exn)
+                                             (git_commit_create_v
+                                              (cast (malloc _git_oid) _pointer _oid)
+                                              repo
+                                              "HEAD"
+                                              signature
+                                              signature
+                                              #f
+                                              (send git-commit-message-field get-value)
+                                              (git_tree_lookup repo tree_oid)
+                                              0))])
+                             (git_reference_name_to_id head_oid repo "HEAD")
+                             (git_commit_create_v
+                              (cast (malloc _git_oid) _pointer _oid)
+                              repo
+                              "HEAD"
+                              signature
+                              signature
+                              #f
+                              (send git-commit-message-field get-value)
+                              (git_tree_lookup repo tree_oid)
+                              1
+                              (git_commit_lookup repo head_oid)))
                            (send git-commit-message-field set-value "")
                            (send git-commit-dialog show #f)))])
         (when (system-position-ok-before-cancel?)
@@ -148,12 +223,56 @@
         
         (new separator-menu-item% (parent git-menu))
 
+        (define remote-list
+          (λ (repo)
+            (let ([strarr (make-strarray)])
+              (git_remote_list strarr repo)
+              (map
+               (λ (i)
+                 (ptr-ref (git_strarray-strings strarr) _string i))
+               (range (git_strarray-count strarr))))))
+        
+        
+        (define git-push
+          (λ (repo remote)
+            (let ([push_opts (cast (malloc _git_push_opts) _pointer _git_push_opts-pointer)])
+              (git_push_init_options push_opts 1)
+              (set-git_remote_callbacks-credentials!
+               (git_push_opts-callbacks push_opts)
+               cred_cb)
+              (let ([ref (git_reference_name (git_repository_head repo))])
+                (git_remote_push
+                 (git_remote_lookup repo remote)
+                 (make-strarray (string-append ref ":" ref))
+                 push_opts)))))
+        (define git-push-dialog (instantiate dialog% ("Git Push")))
+        (define git-push-remote
+          (new choice%
+               [label "Remote: "]
+               [choices (list)]
+               [parent git-push-dialog]
+               [callback (λ (c e)
+                           (git-push (git_repository_open
+                                      (path->string
+                                       (send (get-current-tab) get-directory)))
+                                     (send c get-string-selection)))]))
         (define git-push-menu
           (new menu-item%
                (label "Push")
                (parent git-menu)
                (callback (λ (menu event)
-                           (message-box "git push")))))
+                           (let* ([repo (git_repository_open
+                                         (path->string
+                                          (send (get-current-tab) get-directory)))]
+                                  [remotes (remote-list repo)])
+                             (if (eq? 1 (length remotes))
+                                 (git-push repo (first remotes))
+                                 (begin
+                                   (map
+                                    (λ (remote)
+                                      (send git-push-remote append remote))
+                                    remotes)
+                                   (send git-push-dialog show #t))))))))
         (define git-pull-menu
           (new menu-item%
                (label "Pull")
