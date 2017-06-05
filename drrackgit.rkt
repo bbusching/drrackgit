@@ -161,6 +161,43 @@
 
 
         (define git-commit-dialog (instantiate dialog% ("Git Commit")))
+        (define git-commit-staged
+          (new message%
+               [parent git-commit-dialog]
+               [label ""]
+               [auto-resize #t]))
+        (define (bitmask-check type value mask)
+          (not (zero? (bitwise-and (cast value type _int)
+                                   (cast mask type _int)))))
+        (define (status-cb path status payload)
+          (begin
+            (cond
+              [(bitmask-check _git_status_t status 'GIT_STATUS_INDEX_NEW)
+               (send git-commit-staged set-label
+                     (string-append (send git-commit-staged get-label)
+                                    " [N]-"
+                                    path))]
+              [(bitmask-check _git_status_t status 'GIT_STATUS_INDEX_MODIFIED)
+               (send git-commit-staged set-label
+                     (string-append (send git-commit-staged get-label)
+                                    " [M]-"
+                                    path))]
+              [(bitmask-check _git_status_t status 'GIT_STATUS_INDEX_DELETED)
+               (send git-commit-staged set-label
+                     (string-append (send git-commit-staged get-label)
+                                    " [D]-"
+                                    path))]
+              [(bitmask-check _git_status_t status 'GIT_STATUS_INDEX_RENAMED)
+               (send git-commit-staged set-label
+                     (string-append (send git-commit-staged get-label)
+                                    " [R]-"
+                                    path))]
+              [(bitmask-check _git_status_t status 'GIT_STATUS_INDEX_TYPECHANGE)
+               (send git-commit-staged set-label
+                     (string-append (send git-commit-staged get-label)
+                                    " [T]-"
+                                    path))])
+            0))
         (define git-commit-message-field
           (new text-field%
                [parent git-commit-dialog]
@@ -219,7 +256,10 @@
                (label "Commit")
                (parent git-menu)
                (callback (λ (menu event)
-                           (send git-commit-dialog show #t)))))
+                           (begin
+                             (send git-commit-staged set-label "Files to commit: ")
+                             (git_status_foreach (git_repository_open (path->string (send (get-current-tab) get-directory))) status-cb #f)
+                             (send git-commit-dialog show #t))))))
         
         (new separator-menu-item% (parent git-menu))
 
