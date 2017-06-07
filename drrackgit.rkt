@@ -306,19 +306,74 @@
                                           (send (get-current-tab) get-directory)))]
                                   [remotes (remote-list repo)])
                              (if (eq? 1 (length remotes))
-                                 (git-push repo (first remotes))
+                                 (git-push repo (git_remote_lookup repo (first remotes)))
                                  (begin
                                    (map
                                     (λ (remote)
                                       (send git-push-remote append remote))
                                     remotes)
                                    (send git-push-dialog show #t))))))))
+
+        
+        (define (pull repo remote)
+          (define (fetchhead-cb ref remote1 oid merge payload)
+            (if (not (zero? merge))
+                (let ([heads (cast (malloc (_cpointer _annotated_commit)) _pointer (_cpointer _annotated_commit))]
+                      [analysis (cast (malloc _git_merge_analysis_t) _pointer (_cpointer _git_merge_analysis_t))]
+                      [pref (cast (malloc _git_merge_preference_t) _pointer (_cpointer _git_merge_preference_t))])
+                  (ptr-set! heads _annotated_commit (git_annotated_commit_from_fetchhead repo ref remote1 oid))
+                  (git_merge_analysis analysis pref repo heads 1)
+                  (print (ptr-ref analysis _git_merge_analysis_t))
+                  (if (not (zero? (bitwise-and (cast (ptr-ref analysis _git_merge_analysis_t) _git_merge_analysis_t _int)
+                                               (cast 'GIT_MERGE_ANALYSIS_FASTFORWARD _git_merge_analysis_t _int))))
+                      (begin
+                        (let ([merge_opts (cast (malloc _git_merge_opts) _pointer _git_merge_opts-pointer)]
+                              [checkout_opts (cast (malloc _git_checkout_opts) _pointer _git_checkout_opts-pointer)])
+                          (git_merge_init_options merge_opts 1)
+                          (git_checkout_init_options checkout_opts 1)
+                          (set-git_checkout_opts-checkout_strategy! checkout_opts 'GIT_CHECKOUT_SAFE)
+                          (git_merge repo heads 1 merge_opts checkout_opts))
+                        (git_reference_set_target (git_reference_lookup repo ref)
+                                                  oid
+                                                  "drrackgit: fast forward merge")
+                        (git_repository_state_cleanup repo)
+                        0)
+                      0))
+                0))
+          (let ([fetch_opts (cast (malloc _git_fetch_opts) _pointer _git_fetch_opts-pointer)])
+            (git_fetch_init_options fetch_opts 1)
+            (set-git_remote_callbacks-credentials!
+             (git_fetch_opts-callbacks fetch_opts)
+             cred_cb)
+            (git_remote_fetch remote #f fetch_opts #f)
+            (git_repository_fetchhead_foreach repo fetchhead-cb #f)))
+        (define git-pull-dialog (instantiate dialog% ("Git Pull")))
+        (define git-pull-remote
+          (new choice%
+               [label "Remote: "]
+               [choices (list)]
+               [parent git-pull-dialog]
+               [callback (λ (c e)
+                           (let ([repo (git_repository_open
+                                      (path->string
+                                       (send (get-current-tab) get-directory)))])
+                             (pull repo (git_remote_lookup repo (send c get-string-selection)))))]))
         (define git-pull-menu
           (new menu-item%
                (label "Pull")
                (parent git-menu)
                (callback (λ (menu event)
-                           (message-box "git pull")))))))
+                           (let* ([repo (git_repository_open
+                                         (path->string
+                                          (send (get-current-tab) get-directory)))]
+                                  [remotes (remote-list repo)])
+                             (if (eq? 1 (length remotes))
+                                 (pull repo (git_remote_lookup repo (first remotes)))
+                                 (begin
+                                   (map
+                                    (λ (remote) (send git-pull-remote append remote))
+                                    remotes)
+                                   (send git-pull-dialog show #t))))))))))
     
     (define (phase1) (void))
     (define (phase2) (void))
